@@ -17,7 +17,7 @@
 
 
 <p>
-  Community support for weewx can be found at:
+   Community support for weewx can be found at:
 <p style='padding-left: 50px;'>
   <a href="https://groups.google.com/group/weewx-user">https://groups.google.com/group/weewx-user</a>
 </p>
