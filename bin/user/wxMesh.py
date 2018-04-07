@@ -1,6 +1,6 @@
 #!/usr/bin/python
 #
-# weewx driver that reads data from MQTT subscription
+# weewx driver that reads data from ESPEasy or other MQTT subscriptions
 #
 # This program is free software: you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -13,8 +13,6 @@
 # See http://www.gnu.org/licenses/
 
 #
-# The units must be weewx.US:
-#   degree_F, inHg, inch, inch_per_hour, mile_per_hour
 #
 # To use this driver, put this file in the weewx user directory, then make
 # the following changes to weewx.conf:
@@ -74,6 +72,24 @@ class wxMesh(weewx.drivers.AbstractDevice):
     """weewx driver that reads data from a file"""
 
     def __init__(self, **stn_dict):
+      #
+      start_ts = self.the_time = time.time()
+      self.observations = {
+        'TIME'       : Observation( start=start_ts),
+        'outTemp'    : Observation( start=start_ts),
+        'inTemp'     : Observation( start=start_ts),
+        'barometer'  : Observation( start=start_ts),
+        'pressure'   : Observation( start=start_ts),
+        'windSpeed'  : Observation( start=start_ts),
+        'windDir'    : Observation( start=start_ts),
+        'windGust'   : Observation( start=start_ts),
+        'windGustDir': Observation( start=start_ts),
+        'outHumidity': Observation( start=start_ts),
+        'inHumidity' : Observation( start=start_ts),
+        'radiation'  : Observation( start=start_ts), 
+        'UV'         : Observation( start=start_ts), 
+        'rain'       : Observation( start=start_ts), 
+        }
       # where to find the data file
       self.host = stn_dict.get('host', 'localhost')
       self.topic = stn_dict.get('topic', 'weather')
@@ -82,7 +98,7 @@ class wxMesh(weewx.drivers.AbstractDevice):
       self.client_id = stn_dict.get('client', 'wxclient') # MQTT client id - adjust as desired
       
       # how often to poll the weather data file, seconds
-      self.poll_interval = float(stn_dict.get('poll_interval', 5.0))
+      self.poll_interval = float(stn_dict.get('poll_interval', 25.0))
       # mapping from variable names to weewx names
       self.label_map = stn_dict.get('label_map', {})
 
@@ -99,10 +115,12 @@ class wxMesh(weewx.drivers.AbstractDevice):
 
       # TODO - need some reconnect on disconnect logic
       #self.client.on_disconnect = self.on_disconnect
-      self.client.on_message = self.on_message
 
       self.client.username_pw_set(self.username, self.password)
       self.client.connect(self.host, 1883, 60)
+
+      self.client.on_message = self.on_message
+
       # TODO is this a good idea?
       # while self.connected != True:
       #    time.sleep(1)
@@ -111,11 +129,14 @@ class wxMesh(weewx.drivers.AbstractDevice):
       logdbg("Connected")
       self.client.loop_start()
       self.client.subscribe(self.topic, qos=1)
+      logdbg(" self.client.subscribe -%s- " % (self.topic ))
+
 
     # The callback for when a PUBLISH message is received from the MQTT server.
     def on_message(self, client, userdata, msg):
-      self.payload.put(msg.payload,)
-      logdbg("Added to queue of %d message %s" % (self.payload.qsize(), msg.payload))
+      #self.payload.put(msg.payload,)
+      self.payload.put(msg,)
+      logdbg("Added to queue of %d message:%s <%s> %s %s" % (self.payload.qsize(), msg.topic, msg.payload, msg.qos, msg.retain ))
 
     def on_connect(self, client, userdata, rc):
       if rc == 0:
@@ -130,26 +151,33 @@ class wxMesh(weewx.drivers.AbstractDevice):
 	# read whatever values we can get from the MQTT broker
 	logdbg("Working on queue of %d " % self.payload.qsize())
 	while not self.payload.empty():
-	  msg = str(self.payload.get())
+	  msg = self.payload.get()
+	  smsg = str(msg.payload)
 	  if msg != "Empty" :
-	    logdbg("Working on queue %d payload : %s" % (self.payload.qsize(), msg))
+            logdbg("Working on queue %d message: %s <%s> " % (self.payload.qsize(), msg.topic , msg.payload  ))
 	    data = {}
-	    row = msg.split(",")
+	    row = smsg.split(",")
 	    for datum in row:
-	      (key,value)  = datum.split(":")
-	      data[key] = value
-	      if( key=="TIME" and data[key] == "0"):
-		data[key] = str(int(time.time())) # time from station is not yet reliable - replace it
-	      logdbg("key: "+key+" value: "+data[key])
-	
-	      # map the data into a weewx loop packet
-	      _packet = {'usUnits': weewx.METRIC}
-	      for vname in data:
-		  _packet[self.label_map.get(vname, vname)] = _get_as_float(data, vname)
+              vname = self.label_map.get( msg.topic, msg.topic )
+              data = msg.payload 
+	      loginf("Vname %s %s " % ( vname, data ) )
+              if vname in self.observations.keys():
+                self.the_time = time.time()
+                self.observations[vname].update( data )
+	        ##_packet = {'usUnits': weewx.METRIC}
+                _packet = {'dateTime': int(self.the_time+0.5), 'usUnits' : weewx.METRIC }
+	        logdbg("New Package ---------- %s" % ( self.the_time ) )
+                for obs_type in self.observations:
+                  v1 = self.observations[obs_type].value_at(0)
+                  if v1 is not None:
+	            logdbg("add package Obs %s %s " % (obs_type , v1 ) )
+		    _packet[obs_type] =  float(v1)  
+	        logdbg("Package yield ++++++++++ %s" % (self.the_time ) )
+                yield _packet
+              
+	      #self.observations[vname] = _get_as_float(data, vname)
 
-	      yield _packet
-    
-	logdbg("Sleeping for %d" % self.poll_interval)
+	#logdbg("Sleeping for %d" % self.poll_interval)
 	time.sleep(self.poll_interval)
 
       self.client.disconnect()
@@ -158,3 +186,24 @@ class wxMesh(weewx.drivers.AbstractDevice):
     @property
     def hardware_name(self):
         return "wxMesh"
+
+
+class Observation(object):
+
+    def __init__(self,  start=None):
+
+        if not start:
+            raise ValueError("No start time specified")
+        self.start     = start
+        self.payload   = None
+
+    def update(self, value):
+        self.payload = value
+
+    def value_at(self, time_ts):
+        """Return the observation value at the given time.
+        time_ts: The time in unix epoch time."""
+        return self.payload
+
+
+
